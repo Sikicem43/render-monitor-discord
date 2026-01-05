@@ -29,11 +29,11 @@ jobs:
         run: |
           mkdir -p .ping_state
           LAST_STATE="unknown"
-          LAST_HOURLY=""
+          LAST_HOURLY_KEY=""
           if [[ -f .ping_state/state.txt ]]; then LAST_STATE="$(cat .ping_state/state.txt)"; fi
-          if [[ -f .ping_state/last_hourly_berlin.txt ]]; then LAST_HOURLY="$(cat .ping_state/last_hourly_berlin.txt)"; fi
+          if [[ -f .ping_state/last_hourly_key.txt ]]; then LAST_HOURLY_KEY="$(cat .ping_state/last_hourly_key.txt)"; fi
           echo "last_state=$LAST_STATE" >> "$GITHUB_OUTPUT"
-          echo "last_hourly=$LAST_HOURLY" >> "$GITHUB_OUTPUT"
+          echo "last_hourly_key=$LAST_HOURLY_KEY" >> "$GITHUB_OUTPUT"
 
       - name: Ping Render (robust)
         id: ping
@@ -76,7 +76,6 @@ jobs:
 
           SUCCESS=0
           ERROR=0
-
           [[ -f .ping_state/success.txt ]] && SUCCESS="$(cat .ping_state/success.txt)"
           [[ -f .ping_state/error.txt ]] && ERROR="$(cat .ping_state/error.txt)"
 
@@ -137,33 +136,33 @@ jobs:
             -d "{\"content\":\"✅ PING RECOVERED | ${NOW}\\nStatus: ${{ steps.ping.outputs.code }} | Zeit: ${{ steps.ping.outputs.time_ms }}ms\\nURL: ${{ steps.ping.outputs.url }}\"}" \
             "${{ secrets.DISCORD_WEBHOOK }}"
 
-      - name: Discord HOURLY STATUS (success + errors)
-        if: steps.ping.outputs.state == 'up'
+      - name: Discord HOURLY STATUS (simple, 1x per hour)
         shell: bash
         run: |
-          BERLIN_MINUTE="$(TZ=Europe/Berlin date +%M)"
-          BERLIN_HOUR_KEY="$(TZ=Europe/Berlin date +%Y-%m-%d-%H)"
+          # Hour key in Berlin time (e.g. 2026-01-05-07)
+          HOUR_KEY="$(TZ=Europe/Berlin date +%Y-%m-%d-%H)"
+          LAST_HOUR_KEY="${{ steps.last.outputs.last_hourly_key }}"
 
-          # allow xx:00..xx:05 (GitHub schedule drift)
-          if [[ "$BERLIN_MINUTE" -gt 5 ]]; then
-            exit 0
-          fi
-
-          LAST_HOURLY="${{ steps.last.outputs.last_hourly }}"
-          if [[ "$LAST_HOURLY" == "$BERLIN_HOUR_KEY" ]]; then
+          # Send only once per hour (no :00 window needed)
+          if [[ "$LAST_HOUR_KEY" == "$HOUR_KEY" ]]; then
             exit 0
           fi
 
           SUCCESS="$(cat .ping_state/success.txt 2>/dev/null || echo 0)"
           ERROR="$(cat .ping_state/error.txt 2>/dev/null || echo 0)"
-
           NOW="$(TZ=Europe/Berlin date '+%Y-%m-%d %H:%M %Z')"
 
+          # Decide icon based on current state
+          ICON="🔴"
+          if [[ "${{ steps.ping.outputs.state }}" == "up" ]]; then
+            ICON="🟢"
+          fi
+
           curl -H "Content-Type: application/json" \
-            -d "{\"content\":\"🟢 HOURLY STATUS | ${NOW}\\n✅ Erfolgreiche Pings: ${SUCCESS}\\n❌ Errors: ${ERROR}\\nLetzter: ${{ steps.ping.outputs.code }} | ${{ steps.ping.outputs.time_ms }}ms\\nURL: ${{ steps.ping.outputs.url }}\"}" \
+            -d "{\"content\":\"${ICON} HOURLY STATUS | ${NOW}\\n✅ Erfolgreiche Pings: ${SUCCESS}\\n❌ Errors: ${ERROR}\\nLetzter: ${{ steps.ping.outputs.code }} | ${{ steps.ping.outputs.time_ms }}ms\\nURL: ${{ steps.ping.outputs.url }}\"}" \
             "${{ secrets.DISCORD_WEBHOOK }}"
 
-          # reset counters for next hour
+          # Reset counters for next hour
           echo 0 > .ping_state/success.txt
           echo 0 > .ping_state/error.txt
-          echo "$BERLIN_HOUR_KEY" > .ping_state/last_hourly_berlin.txt
+          echo "$HOUR_KEY" > .ping_state/last_hourly_key.txt
