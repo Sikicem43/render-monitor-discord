@@ -1,0 +1,132 @@
+name: Render Monitor (Discord)
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Restore state (cache)
+        uses: actions/cache@v4
+        with:
+          path: .ping_state
+          key: render-monitor-state
+          restore-keys: render-monitor-state
+
+      - name: Read last state
+        id: last
+        shell: bash
+        run: |
+          mkdir -p .ping_state
+          LAST_STATE="unknown"
+          LAST_HOURLY=""
+          if [[ -f .ping_state/state.txt ]]; then LAST_STATE="$(cat .ping_state/state.txt)"; fi
+          if [[ -f .ping_state/last_hourly_berlin.txt ]]; then LAST_HOURLY="$(cat .ping_state/last_hourly_berlin.txt)"; fi
+          echo "last_state=$LAST_STATE" >> "$GITHUB_OUTPUT"
+          echo "last_hourly=$LAST_HOURLY" >> "$GITHUB_OUTPUT"
+
+      - name: Ping Render (status + time)
+        id: ping
+        shell: bash
+        run: |
+          URL="https://void-seven-api.onrender.com/health"
+
+          OUT="$(curl -sS -o /dev/null \
+            -w "%{http_code} %{time_total}" \
+            --connect-timeout 10 \
+            --max-time 30 \
+            "$URL" || true)"
+
+          CODE="$(echo "$OUT" | awk '{print $1}')"
+          TIME_S="$(echo "$OUT" | awk '{print $2}')"
+          [[ -z "${CODE:-}" ]] && CODE="000"
+          [[ -z "${TIME_S:-}" ]] && TIME_S="0"
+
+          TIME_MS="$(awk -v t="$TIME_S" 'BEGIN{printf("%d", t*1000)}')"
+
+          if [[ "$CODE" =~ ^2[0-9][0-9]$ ]]; then
+            STATE="up"
+          else
+            STATE="down"
+          fi
+
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "time_ms=$TIME_MS" >> "$GITHUB_OUTPUT"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "state=$STATE" >> "$GITHUB_OUTPUT"
+
+      - name: Discord Activated (manual)
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          BERLIN_NOW="$(TZ=Europe/Berlin date '+%Y-%m-%d %H:%M %Z')"
+          curl -H "Content-Type: application/json" \
+            -d "{\"content\":\"🟦 ACTIVATED | ${BERLIN_NOW}\\nStatus: ${{ steps.ping.outputs.code }} | Zeit: ${{ steps.ping.outputs.time_ms }}ms\\nURL: ${{ steps.ping.outputs.url }}\"}" \
+            "${{ secrets.DISCORD_WEBHOOK }}"
+
+      - name: Discord Heartbeat (every 10 min)
+        shell: bash
+        run: |
+          BERLIN_NOW="$(TZ=Europe/Berlin date '+%H:%M')"
+          curl -H "Content-Type: application/json" \
+            -d "{\"content\":\"💓 HEARTBEAT | ${BERLIN_NOW}\\nStatus: ${{ steps.ping.outputs.code }} | Zeit: ${{ steps.ping.outputs.time_ms }}ms\\nURL: ${{ steps.ping.outputs.url }}\"}" \
+            "${{ secrets.DISCORD_WEBHOOK }}"
+
+      - name: Persist current state
+        id: state
+        shell: bash
+        run: |
+          mkdir -p .ping_state
+          CUR_STATE="${{ steps.ping.outputs.state }}"
+          echo "$CUR_STATE" > .ping_state/state.txt
+          echo "cur_state=$CUR_STATE" >> "$GITHUB_OUTPUT"
+
+      - name: Discord alert (DOWN once)
+        if: steps.state.outputs.cur_state == 'down' && steps.last.outputs.last_state != 'down'
+        shell: bash
+        run: |
+          ROLE_ID="${{ secrets.DISCORD_ROLE_ID }}"
+          BERLIN_NOW="$(TZ=Europe/Berlin date '+%Y-%m-%d %H:%M %Z')"
+          curl -H "Content-Type: application/json" \
+            -d "{\"content\":\"<@&${ROLE_ID}> 🚨 PING DOWN | ${BERLIN_NOW}\\nStatus: ${{ steps.ping.outputs.code }} | Zeit: ${{ steps.ping.outputs.time_ms }}ms\\nURL: ${{ steps.ping.outputs.url }}\"}" \
+            "${{ secrets.DISCORD_WEBHOOK }}"
+
+      - name: Discord alert (RECOVERED once)
+        if: steps.state.outputs.cur_state == 'up' && steps.last.outputs.last_state == 'down'
+        shell: bash
+        run: |
+          BERLIN_NOW="$(TZ=Europe/Berlin date '+%Y-%m-%d %H:%M %Z')"
+          curl -H "Content-Type: application/json" \
+            -d "{\"content\":\"✅ PING RECOVERED | ${BERLIN_NOW}\\nStatus: ${{ steps.ping.outputs.code }} | Zeit: ${{ steps.ping.outputs.time_ms }}ms\\nURL: ${{ steps.ping.outputs.url }}\"}" \
+            "${{ secrets.DISCORD_WEBHOOK }}"
+
+      - name: Discord HOURLY ONLINE (Berlin xx:00 + grace)
+        if: steps.ping.outputs.state == 'up'
+        shell: bash
+        run: |
+          BERLIN_MINUTE="$(TZ=Europe/Berlin date +%M)"
+          BERLIN_HOUR_KEY="$(TZ=Europe/Berlin date +%Y-%m-%d-%H)"
+
+          # allow xx:00..xx:05 (GitHub schedule drift)
+          if [[ "$BERLIN_MINUTE" -gt 5 ]]; then
+            exit 0
+          fi
+
+          LAST_HOURLY="${{ steps.last.outputs.last_hourly }}"
+          if [[ "$LAST_HOURLY" == "$BERLIN_HOUR_KEY" ]]; then
+            exit 0
+          fi
+
+          BERLIN_NOW="$(TZ=Europe/Berlin date '+%Y-%m-%d %H:%M %Z')"
+          curl -H "Content-Type: application/json" \
+            -d "{\"content\":\"🟢 HOURLY ONLINE | ${BERLIN_NOW}\\nStatus: ${{ steps.ping.outputs.code }} | Zeit: ${{ steps.ping.outputs.time_ms }}ms\\nURL: ${{ steps.ping.outputs.url }}\"}" \
+            "${{ secrets.DISCORD_WEBHOOK }}"
+
+          mkdir -p .ping_state
+          echo "$BERLIN_HOUR_KEY" > .ping_state/last_hourly_berlin.txt
