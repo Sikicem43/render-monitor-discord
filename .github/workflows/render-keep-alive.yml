@@ -97,17 +97,15 @@ jobs:
       # -------------------------
       # Hourly "ONLINE" report at Berlin full hour (xx:00 Europe/Berlin), max 1 per hour
       # -------------------------
-      - name: Discord hourly ONLINE (Berlin xx:00)
+      -name: Discord hourly ONLINE (Berlin xx:00)
         if: steps.ping.outputs.state == 'up'
         shell: bash
         run: |
           set -euo pipefail
 
-          # Berlin time (handles DST automatically)
           BERLIN_MINUTE="$(TZ=Europe/Berlin date +%M)"
-          BERLIN_HOUR_KEY="$(TZ=Europe/Berlin date +%Y-%m-%d-%H)"  # e.g. 2026-01-05-04
+          BERLIN_HOUR_KEY="$(TZ=Europe/Berlin date +%Y-%m-%d-%H)"
 
-          # Only at full hour in Berlin
           if [[ "$BERLIN_MINUTE" != "00" ]]; then
             echo "Not Berlin full hour, skipping hourly report."
             exit 0
@@ -115,7 +113,7 @@ jobs:
 
           LAST_HOURLY="${{ steps.last.outputs.last_hourly }}"
           if [[ "$LAST_HOURLY" == "$BERLIN_HOUR_KEY" ]]; then
-            echo "Hourly report already sent for this Berlin hour: $BERLIN_HOUR_KEY"
+            echo "Hourly already sent for this Berlin hour."
             exit 0
           fi
 
@@ -123,32 +121,19 @@ jobs:
           UTC_NOW="$(date -u '+%Y-%m-%d %H:%M UTC')"
           BERLIN_NOW="$(TZ=Europe/Berlin date '+%Y-%m-%d %H:%M %Z')"
 
-          payload=$(cat <<JSON
-          {
-            "content": "🟢",
-            "embeds": [
-              {
-                "title": "SERVICE ONLINE (Hourly)",
-                "description": "Stündlicher Status (Berlin xx:00).\\nZeit: ${UTC_NOW} / ${BERLIN_NOW}",
-                "url": "${RUN_URL}",
-                "color": 3066993,
-                "fields": [
-                  { "name": "Status", "value": "${{ steps.ping.outputs.code }}", "inline": true },
-                  { "name": "Zeit", "value": "${{ steps.ping.outputs.time_ms }}ms", "inline": true },
-                  { "name": "URL", "value": "${{ steps.ping.outputs.url }}", "inline": false }
-                ],
-                "footer": { "text": "${GITHUB_REPOSITORY}" }
-              }
-            ]
-          }
-JSON
-          )
+          CODE="${{ steps.ping.outputs.code }}"
+          MS="${{ steps.ping.outputs.time_ms }}"
+          URL="${{ steps.ping.outputs.url }}"
+          REPO="${GITHUB_REPOSITORY}"
+
+          payload="$(printf '{"content":"🟢","embeds":[{"title":"SERVICE ONLINE (Hourly)","description":"Stündlicher Status (Berlin xx:00).\\nZeit: %s / %s","url":"%s","color":3066993,"fields":[{"name":"Status","value":"%s","inline":true},{"name":"Zeit","value":"%sms","inline":true},{"name":"URL","value":"%s","inline":false}],"footer":{"text":"%s"}}]}' \
+            "$UTC_NOW" "$BERLIN_NOW" "$RUN_URL" "$CODE" "$MS" "$URL" "$REPO")"
 
           curl -H "Content-Type: application/json" -d "$payload" "${{ secrets.DISCORD_WEBHOOK }}"
 
-          # Persist "already sent this hour" marker
           mkdir -p .ping_state
           echo "$BERLIN_HOUR_KEY" > .ping_state/last_hourly_berlin.txt
+
 
       # -------------------------
       # DOWN alert after 3 consecutive fails (with role ping)
