@@ -104,13 +104,11 @@ jobs:
           BERLIN_HOUR_KEY="$(TZ=Europe/Berlin date +%Y-%m-%d-%H)"
 
           if [[ "$BERLIN_MINUTE" != "00" ]]; then
-            echo "Not Berlin full hour, skipping hourly report."
             exit 0
           fi
 
           LAST_HOURLY="${{ steps.last.outputs.last_hourly }}"
           if [[ "$LAST_HOURLY" == "$BERLIN_HOUR_KEY" ]]; then
-            echo "Hourly already sent for this Berlin hour."
             exit 0
           fi
 
@@ -118,36 +116,9 @@ jobs:
           UTC_NOW="$(date -u '+%Y-%m-%d %H:%M UTC')"
           BERLIN_NOW="$(TZ=Europe/Berlin date '+%Y-%m-%d %H:%M %Z')"
 
-          payload=$(cat <<'JSON'
-          {
-            "content": "🟢",
-            "embeds": [
-              {
-                "title": "SERVICE ONLINE (Hourly)",
-                "description": "Stündlicher Status (Berlin xx:00).",
-                "url": "__RUN_URL__",
-                "color": 3066993,
-                "fields": [
-                  { "name": "Status", "value": "__CODE__", "inline": true },
-                  { "name": "Zeit", "value": "__MS__ms", "inline": true },
-                  { "name": "URL", "value": "__URL__", "inline": false },
-                  { "name": "Zeitpunkt", "value": "__UTC__ / __BERLIN__", "inline": false }
-                ],
-                "footer": { "text": "__REPO__" }
-              }
-            ]
-          }
-JSON
-          )
-          payload="${payload/__RUN_URL__/$RUN_URL}"
-          payload="${payload/__CODE__/${{ steps.ping.outputs.code }}}"
-          payload="${payload/__MS__/${{ steps.ping.outputs.time_ms }}}"
-          payload="${payload/__URL__/${{ steps.ping.outputs.url }}}"
-          payload="${payload/__UTC__/$UTC_NOW}"
-          payload="${payload/__BERLIN__/$BERLIN_NOW}"
-          payload="${payload/__REPO__/$GITHUB_REPOSITORY}"
-
-          curl -H "Content-Type: application/json" -d "$payload" "${{ secrets.DISCORD_WEBHOOK }}"
+          curl -H "Content-Type: application/json" \
+            -d "{\"content\":\"🟢 SERVICE ONLINE (Hourly)\",\"embeds\":[{\"title\":\"SERVICE ONLINE (Hourly)\",\"description\":\"Berlin xx:00 | ${UTC_NOW} / ${BERLIN_NOW}\",\"url\":\"${RUN_URL}\",\"fields\":[{\"name\":\"Status\",\"value\":\"${{ steps.ping.outputs.code }}\",\"inline\":true},{\"name\":\"Zeit\",\"value\":\"${{ steps.ping.outputs.time_ms }}ms\",\"inline\":true},{\"name\":\"URL\",\"value\":\"${{ steps.ping.outputs.url }}\",\"inline\":false}],\"footer\":{\"text\":\"${GITHUB_REPOSITORY}\"}}]}" \
+            "${{ secrets.DISCORD_WEBHOOK }}"
 
           echo "$BERLIN_HOUR_KEY" > .ping_state/last_hourly_berlin.txt
 
@@ -158,34 +129,9 @@ JSON
           ROLE_ID="${{ secrets.DISCORD_ROLE_ID }}"
           RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
 
-          payload=$(cat <<'JSON'
-          {
-            "content": "<@&__ROLE__> 🚨",
-            "embeds": [
-              {
-                "title": "PING DOWN (3x Fail in Folge)",
-                "description": "Der Ping ist 3x hintereinander fehlgeschlagen.",
-                "url": "__RUN_URL__",
-                "color": 15158332,
-                "fields": [
-                  { "name": "Status", "value": "__CODE__", "inline": true },
-                  { "name": "Zeit", "value": "__MS__ms", "inline": true },
-                  { "name": "URL", "value": "__URL__", "inline": false }
-                ],
-                "footer": { "text": "__REPO__" }
-              }
-            ]
-          }
-JSON
-          )
-          payload="${payload/__ROLE__/$ROLE_ID}"
-          payload="${payload/__RUN_URL__/$RUN_URL}"
-          payload="${payload/__CODE__/${{ steps.ping.outputs.code }}}"
-          payload="${payload/__MS__/${{ steps.ping.outputs.time_ms }}}"
-          payload="${payload/__URL__/${{ steps.ping.outputs.url }}}"
-          payload="${payload/__REPO__/$GITHUB_REPOSITORY}"
-
-          curl -H "Content-Type: application/json" -d "$payload" "${{ secrets.DISCORD_WEBHOOK }}"
+          curl -H "Content-Type: application/json" \
+            -d "{\"content\":\"<@&${ROLE_ID}> 🚨\",\"embeds\":[{\"title\":\"PING DOWN (3x Fail in Folge)\",\"description\":\"3x hintereinander fehlgeschlagen.\",\"url\":\"${RUN_URL}\",\"fields\":[{\"name\":\"Status\",\"value\":\"${{ steps.ping.outputs.code }}\",\"inline\":true},{\"name\":\"Zeit\",\"value\":\"${{ steps.ping.outputs.time_ms }}ms\",\"inline\":true},{\"name\":\"URL\",\"value\":\"${{ steps.ping.outputs.url }}\",\"inline\":false}],\"footer\":{\"text\":\"${GITHUB_REPOSITORY}\"}}]}" \
+            "${{ secrets.DISCORD_WEBHOOK }}"
 
       - name: Discord alert (RECOVERED)
         if: steps.state.outputs.cur_state == 'up' && steps.state.outputs.last_state == 'down'
@@ -193,33 +139,9 @@ JSON
         run: |
           RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
 
-          payload=$(cat <<'JSON'
-          {
-            "content": "✅",
-            "embeds": [
-              {
-                "title": "PING RECOVERED",
-                "description": "Ping ist wieder erfolgreich.",
-                "url": "__RUN_URL__",
-                "color": 3066993,
-                "fields": [
-                  { "name": "Status", "value": "__CODE__", "inline": true },
-                  { "name": "Zeit", "value": "__MS__ms", "inline": true },
-                  { "name": "URL", "value": "__URL__", "inline": false }
-                ],
-                "footer": { "text": "__REPO__" }
-              }
-            ]
-          }
-JSON
-          )
-          payload="${payload/__RUN_URL__/$RUN_URL}"
-          payload="${payload/__CODE__/${{ steps.ping.outputs.code }}}"
-          payload="${payload/__MS__/${{ steps.ping.outputs.time_ms }}}"
-          payload="${payload/__URL__/${{ steps.ping.outputs.url }}}"
-          payload="${payload/__REPO__/$GITHUB_REPOSITORY}"
-
-          curl -H "Content-Type: application/json" -d "$payload" "${{ secrets.DISCORD_WEBHOOK }}"
+          curl -H "Content-Type: application/json" \
+            -d "{\"content\":\"✅\",\"embeds\":[{\"title\":\"PING RECOVERED\",\"description\":\"Ping ist wieder erfolgreich.\",\"url\":\"${RUN_URL}\",\"fields\":[{\"name\":\"Status\",\"value\":\"${{ steps.ping.outputs.code }}\",\"inline\":true},{\"name\":\"Zeit\",\"value\":\"${{ steps.ping.outputs.time_ms }}ms\",\"inline\":true},{\"name\":\"URL\",\"value\":\"${{ steps.ping.outputs.url }}\",\"inline\":false}],\"footer\":{\"text\":\"${GITHUB_REPOSITORY}\"}}]}" \
+            "${{ secrets.DISCORD_WEBHOOK }}"
 
       - name: Keep run red when down
         if: steps.ping.outputs.state == 'down'
