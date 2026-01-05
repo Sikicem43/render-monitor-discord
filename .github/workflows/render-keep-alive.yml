@@ -42,7 +42,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          URL="http://this-domain-does-not-exist-123456.com"
+          URL="https://void-seven-api.onrender.com/health"
 
           OUT="$(curl -sS -o /dev/null \
             -w "%{http_code} %{time_total}" \
