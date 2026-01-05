@@ -36,17 +36,6 @@ jobs:
           echo "fail_streak=$FAIL_STREAK" >> "$GITHUB_OUTPUT"
           echo "last_hourly=$LAST_HOURLY" >> "$GITHUB_OUTPUT"
 
-      - name: Discord Activated (manual)
-        if: github.event_name == 'workflow_dispatch'
-        shell: bash
-        run: |
-          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          BERLIN_NOW="$(TZ=Europe/Berlin date '+%Y-%m-%d %H:%M %Z')"
-
-          curl -H "Content-Type: application/json" \
-            -d "{\"content\":\"🟦 Activated | ${BERLIN_NOW}\\nRun: ${RUN_URL}\"}" \
-            "${{ secrets.DISCORD_WEBHOOK }}"
-
       - name: Ping Render (status + time)
         id: ping
         shell: bash
@@ -81,6 +70,16 @@ jobs:
           echo "time_ms=$TIME_MS" >> "$GITHUB_OUTPUT"
           echo "url=$URL" >> "$GITHUB_OUTPUT"
           echo "state=$STATE" >> "$GITHUB_OUTPUT"
+
+      - name: Discord Activated (manual)
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          BERLIN_NOW="$(TZ=Europe/Berlin date '+%Y-%m-%d %H:%M %Z')"
+
+          curl -H "Content-Type: application/json" \
+            -d "{\"content\":\"🟦 ACTIVATED | ${BERLIN_NOW}\\nStatus: ${{ steps.ping.outputs.code }} | Zeit: ${{ steps.ping.outputs.time_ms }}ms\\nURL: ${{ steps.ping.outputs.url }}\"}" \
+            "${{ secrets.DISCORD_WEBHOOK }}"
 
       - name: Update fail streak + persist state
         id: state
@@ -123,12 +122,11 @@ jobs:
             exit 0
           fi
 
-          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           UTC_NOW="$(date -u '+%Y-%m-%d %H:%M UTC')"
           BERLIN_NOW="$(TZ=Europe/Berlin date '+%Y-%m-%d %H:%M %Z')"
 
           curl -H "Content-Type: application/json" \
-            -d "{\"content\":\"🟢 SERVICE ONLINE (Hourly) | Status: ${{ steps.ping.outputs.code }} | Zeit: ${{ steps.ping.outputs.time_ms }}ms\\nZeit: ${UTC_NOW} / ${BERLIN_NOW}\\nRun: ${RUN_URL}\"}" \
+            -d "{\"content\":\"🟢 SERVICE ONLINE (Hourly) | Status: ${{ steps.ping.outputs.code }} | Zeit: ${{ steps.ping.outputs.time_ms }}ms\\nZeit: ${UTC_NOW} / ${BERLIN_NOW}\\nURL: ${{ steps.ping.outputs.url }}\"}" \
             "${{ secrets.DISCORD_WEBHOOK }}"
 
           echo "$BERLIN_HOUR_KEY" > .ping_state/last_hourly_berlin.txt
@@ -138,22 +136,20 @@ jobs:
         shell: bash
         run: |
           ROLE_ID="${{ secrets.DISCORD_ROLE_ID }}"
-          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           BERLIN_NOW="$(TZ=Europe/Berlin date '+%Y-%m-%d %H:%M %Z')"
 
           curl -H "Content-Type: application/json" \
-            -d "{\"content\":\"<@&${ROLE_ID}> 🚨 PING DOWN | ${BERLIN_NOW}\\nStatus: ${{ steps.ping.outputs.code }} | Zeit: ${{ steps.ping.outputs.time_ms }}ms\\nURL: ${{ steps.ping.outputs.url }}\\nRun: ${RUN_URL}\"}" \
+            -d "{\"content\":\"<@&${ROLE_ID}> 🚨 PING DOWN | ${BERLIN_NOW}\\nStatus: ${{ steps.ping.outputs.code }} | Zeit: ${{ steps.ping.outputs.time_ms }}ms\\nURL: ${{ steps.ping.outputs.url }}\"}" \
             "${{ secrets.DISCORD_WEBHOOK }}"
 
       - name: Discord alert (RECOVERED)
         if: steps.state.outputs.cur_state == 'up' && steps.state.outputs.last_state == 'down'
         shell: bash
         run: |
-          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           BERLIN_NOW="$(TZ=Europe/Berlin date '+%Y-%m-%d %H:%M %Z')"
 
           curl -H "Content-Type: application/json" \
-            -d "{\"content\":\"✅ PING RECOVERED | ${BERLIN_NOW}\\nStatus: ${{ steps.ping.outputs.code }} | Zeit: ${{ steps.ping.outputs.time_ms }}ms\\nURL: ${{ steps.ping.outputs.url }}\\nRun: ${RUN_URL}\"}" \
+            -d "{\"content\":\"✅ PING RECOVERED | ${BERLIN_NOW}\\nStatus: ${{ steps.ping.outputs.code }} | Zeit: ${{ steps.ping.outputs.time_ms }}ms\\nURL: ${{ steps.ping.outputs.url }}\"}" \
             "${{ secrets.DISCORD_WEBHOOK }}"
 
       - name: Keep run red when down
