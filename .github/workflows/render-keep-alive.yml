@@ -3,27 +3,218 @@ name: Render Keep Alive
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/10 * * * *"
+    - cron: "*/10 * * * *"  # every 10 minutes (UTC)
+
+permissions:
+  contents: read
 
 jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      - name: Ping Render
+      - name: Restore state (cache)
+        uses: actions/cache@v4
+        with:
+          path: .ping_state
+          key: render-ping-state
+          restore-keys: render-ping-state
+
+      - name: Read last state
+        id: last
+        shell: bash
+        run: |
+          mkdir -p .ping_state
+          LAST_STATE="unknown"
+          FAIL_STREAK="0"
+          LAST_HOURLY=""
+
+          if [[ -f .ping_state/state.txt ]]; then LAST_STATE="$(cat .ping_state/state.txt)"; fi
+          if [[ -f .ping_state/fail_streak.txt ]]; then FAIL_STREAK="$(cat .ping_state/fail_streak.txt)"; fi
+          if [[ -f .ping_state/last_hourly_berlin.txt ]]; then LAST_HOURLY="$(cat .ping_state/last_hourly_berlin.txt)"; fi
+
+          echo "last_state=$LAST_STATE" >> "$GITHUB_OUTPUT"
+          echo "fail_streak=$FAIL_STREAK" >> "$GITHUB_OUTPUT"
+          echo "last_hourly=$LAST_HOURLY" >> "$GITHUB_OUTPUT"
+
+      - name: Ping Render (status + time)
         id: ping
+        shell: bash
         run: |
-          curl -fsS https://void-seven-api.onrender.com/health > /dev/null
+          set -euo pipefail
 
-      - name: Notify Discord (success)
-        if: success()
-        run: |
-          curl -H "Content-Type: application/json" \
-          -d '{"content":"✅ Render API ist erreichbar"}' \
-          ${{ secrets.DISCORD_WEBHOOK }}
+          URL="https://void-seven-api onrender .com/health"
 
-      - name: Notify Discord (failure)
-        if: failure()
+          OUT="$(curl -sS -o /dev/null \
+            -w "%{http_code} %{time_total}" \
+            --connect-timeout 5 \
+            --max-time 15 \
+            "$URL" || true)"
+
+          CODE="$(echo "$OUT" | awk '{print $1}')"
+          TIME_S="$(echo "$OUT" | awk '{print $2}')"
+
+          if [[ -z "${CODE:-}" ]]; then
+            CODE="000"
+            TIME_S="0"
+          fi
+
+          TIME_MS="$(awk -v t="$TIME_S" 'BEGIN{printf("%d", t*1000)}')"
+
+          if [[ "$CODE" =~ ^2[0-9][0-9]$ ]]; then
+            STATE="up"
+          else
+            STATE="down"
+          fi
+
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "time_ms=$TIME_MS" >> "$GITHUB_OUTPUT"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "state=$STATE" >> "$GITHUB_OUTPUT"
+
+      - name: Update fail streak + persist state
+        id: state
+        shell: bash
         run: |
-          curl -H "Content-Type: application/json" \
-          -d '{"content":"❌ Render API **NICHT** erreichbar!"}' \
-          ${{ secrets.DISCORD_WEBHOOK }}
+          mkdir -p .ping_state
+
+          LAST_STATE="${{ steps.last.outputs.last_state }}"
+          FAIL_STREAK="${{ steps.last.outputs.fail_streak }}"
+          CUR_STATE="${{ steps.ping.outputs.state }}"
+
+          if [[ "$CUR_STATE" == "down" ]]; then
+            FAIL_STREAK=$((FAIL_STREAK + 1))
+          else
+            FAIL_STREAK=0
+          fi
+
+          echo "$CUR_STATE" > .ping_state/state.txt
+          echo "$FAIL_STREAK" > .ping_state/fail_streak.txt
+
+          echo "cur_state=$CUR_STATE" >> "$GITHUB_OUTPUT"
+          echo "fail_streak=$FAIL_STREAK" >> "$GITHUB_OUTPUT"
+          echo "last_state=$LAST_STATE" >> "$GITHUB_OUTPUT"
+
+      # -------------------------
+      # Hourly "ONLINE" report at Berlin full hour (xx:00 Europe/Berlin), max 1 per hour
+      # -------------------------
+      - name: Discord hourly ONLINE (Berlin xx:00)
+        if: steps.ping.outputs.state == 'up'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Berlin time (handles DST automatically)
+          BERLIN_MINUTE="$(TZ=Europe/Berlin date +%M)"
+          BERLIN_HOUR_KEY="$(TZ=Europe/Berlin date +%Y-%m-%d-%H)"  # e.g. 2026-01-05-04
+
+          # Only at full hour in Berlin
+          if [[ "$BERLIN_MINUTE" != "00" ]]; then
+            echo "Not Berlin full hour, skipping hourly report."
+            exit 0
+          fi
+
+          LAST_HOURLY="${{ steps.last.outputs.last_hourly }}"
+          if [[ "$LAST_HOURLY" == "$BERLIN_HOUR_KEY" ]]; then
+            echo "Hourly report already sent for this Berlin hour: $BERLIN_HOUR_KEY"
+            exit 0
+          fi
+
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          UTC_NOW="$(date -u '+%Y-%m-%d %H:%M UTC')"
+          BERLIN_NOW="$(TZ=Europe/Berlin date '+%Y-%m-%d %H:%M %Z')"
+
+          payload=$(cat <<JSON
+          {
+            "content": "🟢",
+            "embeds": [
+              {
+                "title": "SERVICE ONLINE (Hourly)",
+                "description": "Stündlicher Status (Berlin xx:00).\\nZeit: ${UTC_NOW} / ${BERLIN_NOW}",
+                "url": "${RUN_URL}",
+                "color": 3066993,
+                "fields": [
+                  { "name": "Status", "value": "${{ steps.ping.outputs.code }}", "inline": true },
+                  { "name": "Zeit", "value": "${{ steps.ping.outputs.time_ms }}ms", "inline": true },
+                  { "name": "URL", "value": "${{ steps.ping.outputs.url }}", "inline": false }
+                ],
+                "footer": { "text": "${GITHUB_REPOSITORY}" }
+              }
+            ]
+          }
+JSON
+          )
+
+          curl -H "Content-Type: application/json" -d "$payload" "${{ secrets.DISCORD_WEBHOOK }}"
+
+          # Persist "already sent this hour" marker
+          mkdir -p .ping_state
+          echo "$BERLIN_HOUR_KEY" > .ping_state/last_hourly_berlin.txt
+
+      # -------------------------
+      # DOWN alert after 3 consecutive fails (with role ping)
+      # -------------------------
+      - name: Discord alert (DOWN after 3 fails)
+        if: steps.state.outputs.cur_state == 'down' && steps.state.outputs.fail_streak == '3'
+        shell: bash
+        run: |
+          ROLE_ID="${{ secrets.DISCORD_ROLE_ID }}"
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+          payload=$(cat <<JSON
+          {
+            "content": "<@&${ROLE_ID}> 🚨",
+            "embeds": [
+              {
+                "title": "PING DOWN (3x Fail in Folge)",
+                "description": "Der Ping ist 3x hintereinander fehlgeschlagen.",
+                "url": "${RUN_URL}",
+                "color": 15158332,
+                "fields": [
+                  { "name": "Status", "value": "${{ steps.ping.outputs.code }}", "inline": true },
+                  { "name": "Zeit", "value": "${{ steps.ping.outputs.time_ms }}ms", "inline": true },
+                  { "name": "URL", "value": "${{ steps.ping.outputs.url }}", "inline": false }
+                ],
+                "footer": { "text": "${GITHUB_REPOSITORY}" }
+              }
+            ]
+          }
+JSON
+          )
+
+          curl -H "Content-Type: application/json" -d "$payload" "${{ secrets.DISCORD_WEBHOOK }}"
+
+      # -------------------------
+      # RECOVERY message once (when last was down and now up)
+      # -------------------------
+      - name: Discord alert (RECOVERED)
+        if: steps.state.outputs.cur_state == 'up' && steps.state.outputs.last_state == 'down'
+        shell: bash
+        run: |
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+          payload=$(cat <<JSON
+          {
+            "content": "✅",
+            "embeds": [
+              {
+                "title": "PING RECOVERED",
+                "description": "Ping ist wieder erfolgreich.",
+                "url": "${RUN_URL}",
+                "color": 3066993,
+                "fields": [
+                  { "name": "Status", "value": "${{ steps.ping.outputs.code }}", "inline": true },
+                  { "name": "Zeit", "value": "${{ steps.ping.outputs.time_ms }}ms", "inline": true },
+                  { "name": "URL", "value": "${{ steps.ping.outputs.url }}", "inline": false }
+                ],
+                "footer": { "text": "${GITHUB_REPOSITORY}" }
+              }
+            ]
+          }
+JSON
+          )
+
+          curl -H "Content-Type: application/json" -d "$payload" "${{ secrets.DISCORD_WEBHOOK }}"
+
+      - name: Keep run red when down
+        if: steps.ping.outputs.state == 'down'
+        run: exit 1
