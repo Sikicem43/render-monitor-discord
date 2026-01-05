@@ -1,4 +1,4 @@
-name: Render Keep Alive
+name: Render Keep Alive # cron enabled
 
 on:
   workflow_dispatch:
