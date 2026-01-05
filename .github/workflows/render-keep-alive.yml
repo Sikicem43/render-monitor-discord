@@ -42,7 +42,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          URL="https://void- seven-api.onrender.com/health"
+          URL="http://this-domain-does-not-exist-123456.com"
 
           OUT="$(curl -sS -o /dev/null \
             -w "%{http_code} %{time_total}" \
@@ -123,7 +123,7 @@ jobs:
           echo "$BERLIN_HOUR_KEY" > .ping_state/last_hourly_berlin.txt
 
       - name: Discord alert (DOWN after 3 fails)
-        if: steps.state.outputs.cur_state == 'down' && steps.state.outputs.fail_streak == '3'
+        if: steps.state.outputs.cur_state == 'down' && steps.state.outputs.last_state != 'down' 
         shell: bash
         run: |
           ROLE_ID="${{ secrets.DISCORD_ROLE_ID }}"
