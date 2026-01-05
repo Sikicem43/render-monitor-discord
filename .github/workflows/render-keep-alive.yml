@@ -70,6 +70,17 @@ jobs:
           echo "time_ms=$TIME_MS" >> "$GITHUB_OUTPUT"
           echo "url=$URL" >> "$GITHUB_OUTPUT"
           echo "state=$STATE" >> "$GITHUB_OUTPUT"
+          
+
+      - name: Discord Heartbeat (every 10 min)
+        shell: bash
+        run: |
+          BERLIN_NOW="$(TZ=Europe/Berlin date '+%H:%M')"
+
+          curl -H "Content-Type: application/json" \
+            -d "{\"content\":\"💓 HEARTBEAT | ${BERLIN_NOW}\\nStatus: ${{ steps.ping.outputs.code }} | Zeit: ${{ steps.ping.outputs.time_ms }}ms\\nURL: ${{ steps.ping.outputs.url }}\"}" \
+            "${{ secrets.DISCORD_WEBHOOK }}"
+
 
       - name: Discord Activated (manual)
         if: github.event_name == 'workflow_dispatch'
