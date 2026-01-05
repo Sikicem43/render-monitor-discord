@@ -10,4 +10,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Ping Render
-        run: curl -fsS https://void-seven-api.onrender.com/health > /dev/null
+        id: ping
+        run: |
+          curl -fsS https://void-seven-api.onrender.com/health > /dev/null
+
+      - name: Notify Discord (success)
+        if: success()
+        run: |
+          curl -H "Content-Type: application/json" \
+          -d '{"content":"✅ Render API ist erreichbar"}' \
+          ${{ secrets.DISCORD_WEBHOOK }}
+
+      - name: Notify Discord (failure)
+        if: failure()
+        run: |
+          curl -H "Content-Type: application/json" \
+          -d '{"content":"❌ Render API **NICHT** erreichbar!"}' \
+          ${{ secrets.DISCORD_WEBHOOK }}
