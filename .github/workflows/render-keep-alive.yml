@@ -3,7 +3,7 @@ name: Render Keep Alive
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/10 * * * *"  # every 10 minutes (UTC)
+    - cron: "*/10 * * * *" # every 10 minutes (UTC)
 
 permissions:
   contents: read
@@ -42,7 +42,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          URL="https://void-seven-api onrender .com/health"
+          URL="https://void-seven-api.onrender.com/health"
 
           OUT="$(curl -sS -o /dev/null \
             -w "%{http_code} %{time_total}" \
@@ -94,10 +94,7 @@ jobs:
           echo "fail_streak=$FAIL_STREAK" >> "$GITHUB_OUTPUT"
           echo "last_state=$LAST_STATE" >> "$GITHUB_OUTPUT"
 
-      # -------------------------
-      # Hourly "ONLINE" report at Berlin full hour (xx:00 Europe/Berlin), max 1 per hour
-      # -------------------------
-      -name: Discord hourly ONLINE (Berlin xx:00)
+      - name: Discord hourly ONLINE (Berlin xx:00)
         if: steps.ping.outputs.state == 'up'
         shell: bash
         run: |
@@ -121,23 +118,39 @@ jobs:
           UTC_NOW="$(date -u '+%Y-%m-%d %H:%M UTC')"
           BERLIN_NOW="$(TZ=Europe/Berlin date '+%Y-%m-%d %H:%M %Z')"
 
-          CODE="${{ steps.ping.outputs.code }}"
-          MS="${{ steps.ping.outputs.time_ms }}"
-          URL="${{ steps.ping.outputs.url }}"
-          REPO="${GITHUB_REPOSITORY}"
-
-          payload="$(printf '{"content":"🟢","embeds":[{"title":"SERVICE ONLINE (Hourly)","description":"Stündlicher Status (Berlin xx:00).\\nZeit: %s / %s","url":"%s","color":3066993,"fields":[{"name":"Status","value":"%s","inline":true},{"name":"Zeit","value":"%sms","inline":true},{"name":"URL","value":"%s","inline":false}],"footer":{"text":"%s"}}]}' \
-            "$UTC_NOW" "$BERLIN_NOW" "$RUN_URL" "$CODE" "$MS" "$URL" "$REPO")"
+          payload=$(cat <<'JSON'
+          {
+            "content": "🟢",
+            "embeds": [
+              {
+                "title": "SERVICE ONLINE (Hourly)",
+                "description": "Stündlicher Status (Berlin xx:00).",
+                "url": "__RUN_URL__",
+                "color": 3066993,
+                "fields": [
+                  { "name": "Status", "value": "__CODE__", "inline": true },
+                  { "name": "Zeit", "value": "__MS__ms", "inline": true },
+                  { "name": "URL", "value": "__URL__", "inline": false },
+                  { "name": "Zeitpunkt", "value": "__UTC__ / __BERLIN__", "inline": false }
+                ],
+                "footer": { "text": "__REPO__" }
+              }
+            ]
+          }
+JSON
+          )
+          payload="${payload/__RUN_URL__/$RUN_URL}"
+          payload="${payload/__CODE__/${{ steps.ping.outputs.code }}}"
+          payload="${payload/__MS__/${{ steps.ping.outputs.time_ms }}}"
+          payload="${payload/__URL__/${{ steps.ping.outputs.url }}}"
+          payload="${payload/__UTC__/$UTC_NOW}"
+          payload="${payload/__BERLIN__/$BERLIN_NOW}"
+          payload="${payload/__REPO__/$GITHUB_REPOSITORY}"
 
           curl -H "Content-Type: application/json" -d "$payload" "${{ secrets.DISCORD_WEBHOOK }}"
 
-          mkdir -p .ping_state
           echo "$BERLIN_HOUR_KEY" > .ping_state/last_hourly_berlin.txt
 
-
-      # -------------------------
-      # DOWN alert after 3 consecutive fails (with role ping)
-      # -------------------------
       - name: Discord alert (DOWN after 3 fails)
         if: steps.state.outputs.cur_state == 'down' && steps.state.outputs.fail_streak == '3'
         shell: bash
@@ -145,58 +158,66 @@ jobs:
           ROLE_ID="${{ secrets.DISCORD_ROLE_ID }}"
           RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
 
-          payload=$(cat <<JSON
+          payload=$(cat <<'JSON'
           {
-            "content": "<@&${ROLE_ID}> 🚨",
+            "content": "<@&__ROLE__> 🚨",
             "embeds": [
               {
                 "title": "PING DOWN (3x Fail in Folge)",
                 "description": "Der Ping ist 3x hintereinander fehlgeschlagen.",
-                "url": "${RUN_URL}",
+                "url": "__RUN_URL__",
                 "color": 15158332,
                 "fields": [
-                  { "name": "Status", "value": "${{ steps.ping.outputs.code }}", "inline": true },
-                  { "name": "Zeit", "value": "${{ steps.ping.outputs.time_ms }}ms", "inline": true },
-                  { "name": "URL", "value": "${{ steps.ping.outputs.url }}", "inline": false }
+                  { "name": "Status", "value": "__CODE__", "inline": true },
+                  { "name": "Zeit", "value": "__MS__ms", "inline": true },
+                  { "name": "URL", "value": "__URL__", "inline": false }
                 ],
-                "footer": { "text": "${GITHUB_REPOSITORY}" }
+                "footer": { "text": "__REPO__" }
               }
             ]
           }
 JSON
           )
+          payload="${payload/__ROLE__/$ROLE_ID}"
+          payload="${payload/__RUN_URL__/$RUN_URL}"
+          payload="${payload/__CODE__/${{ steps.ping.outputs.code }}}"
+          payload="${payload/__MS__/${{ steps.ping.outputs.time_ms }}}"
+          payload="${payload/__URL__/${{ steps.ping.outputs.url }}}"
+          payload="${payload/__REPO__/$GITHUB_REPOSITORY}"
 
           curl -H "Content-Type: application/json" -d "$payload" "${{ secrets.DISCORD_WEBHOOK }}"
 
-      # -------------------------
-      # RECOVERY message once (when last was down and now up)
-      # -------------------------
       - name: Discord alert (RECOVERED)
         if: steps.state.outputs.cur_state == 'up' && steps.state.outputs.last_state == 'down'
         shell: bash
         run: |
           RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
 
-          payload=$(cat <<JSON
+          payload=$(cat <<'JSON'
           {
             "content": "✅",
             "embeds": [
               {
                 "title": "PING RECOVERED",
                 "description": "Ping ist wieder erfolgreich.",
-                "url": "${RUN_URL}",
+                "url": "__RUN_URL__",
                 "color": 3066993,
                 "fields": [
-                  { "name": "Status", "value": "${{ steps.ping.outputs.code }}", "inline": true },
-                  { "name": "Zeit", "value": "${{ steps.ping.outputs.time_ms }}ms", "inline": true },
-                  { "name": "URL", "value": "${{ steps.ping.outputs.url }}", "inline": false }
+                  { "name": "Status", "value": "__CODE__", "inline": true },
+                  { "name": "Zeit", "value": "__MS__ms", "inline": true },
+                  { "name": "URL", "value": "__URL__", "inline": false }
                 ],
-                "footer": { "text": "${GITHUB_REPOSITORY}" }
+                "footer": { "text": "__REPO__" }
               }
             ]
           }
 JSON
           )
+          payload="${payload/__RUN_URL__/$RUN_URL}"
+          payload="${payload/__CODE__/${{ steps.ping.outputs.code }}}"
+          payload="${payload/__MS__/${{ steps.ping.outputs.time_ms }}}"
+          payload="${payload/__URL__/${{ steps.ping.outputs.url }}}"
+          payload="${payload/__REPO__/$GITHUB_REPOSITORY}"
 
           curl -H "Content-Type: application/json" -d "$payload" "${{ secrets.DISCORD_WEBHOOK }}"
 
