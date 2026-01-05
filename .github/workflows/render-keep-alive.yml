@@ -36,6 +36,17 @@ jobs:
           echo "fail_streak=$FAIL_STREAK" >> "$GITHUB_OUTPUT"
           echo "last_hourly=$LAST_HOURLY" >> "$GITHUB_OUTPUT"
 
+      - name: Discord Activated (manual)
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          BERLIN_NOW="$(TZ=Europe/Berlin date '+%Y-%m-%d %H:%M %Z')"
+
+          curl -H "Content-Type: application/json" \
+            -d "{\"content\":\"🟦 Activated | ${BERLIN_NOW}\\nRun: ${RUN_URL}\"}" \
+            "${{ secrets.DISCORD_WEBHOOK }}"
+
       - name: Ping Render (status + time)
         id: ping
         shell: bash
@@ -117,20 +128,21 @@ jobs:
           BERLIN_NOW="$(TZ=Europe/Berlin date '+%Y-%m-%d %H:%M %Z')"
 
           curl -H "Content-Type: application/json" \
-            -d "{\"content\":\"🟢 SERVICE ONLINE (Hourly)\",\"embeds\":[{\"title\":\"SERVICE ONLINE (Hourly)\",\"description\":\"Berlin xx:00 | ${UTC_NOW} / ${BERLIN_NOW}\",\"url\":\"${RUN_URL}\",\"fields\":[{\"name\":\"Status\",\"value\":\"${{ steps.ping.outputs.code }}\",\"inline\":true},{\"name\":\"Zeit\",\"value\":\"${{ steps.ping.outputs.time_ms }}ms\",\"inline\":true},{\"name\":\"URL\",\"value\":\"${{ steps.ping.outputs.url }}\",\"inline\":false}],\"footer\":{\"text\":\"${GITHUB_REPOSITORY}\"}}]}" \
+            -d "{\"content\":\"🟢 SERVICE ONLINE (Hourly) | Status: ${{ steps.ping.outputs.code }} | Zeit: ${{ steps.ping.outputs.time_ms }}ms\\nZeit: ${UTC_NOW} / ${BERLIN_NOW}\\nRun: ${RUN_URL}\"}" \
             "${{ secrets.DISCORD_WEBHOOK }}"
 
           echo "$BERLIN_HOUR_KEY" > .ping_state/last_hourly_berlin.txt
 
-      - name: Discord alert (DOWN after 3 fails)
-        if: steps.state.outputs.cur_state == 'down' && steps.state.outputs.last_state != 'down' 
+      - name: Discord alert (DOWN)
+        if: steps.state.outputs.cur_state == 'down' && steps.state.outputs.last_state != 'down'
         shell: bash
         run: |
           ROLE_ID="${{ secrets.DISCORD_ROLE_ID }}"
           RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          BERLIN_NOW="$(TZ=Europe/Berlin date '+%Y-%m-%d %H:%M %Z')"
 
           curl -H "Content-Type: application/json" \
-            -d "{\"content\":\"<@&${ROLE_ID}> 🚨\",\"embeds\":[{\"title\":\"PING DOWN (3x Fail in Folge)\",\"description\":\"3x hintereinander fehlgeschlagen.\",\"url\":\"${RUN_URL}\",\"fields\":[{\"name\":\"Status\",\"value\":\"${{ steps.ping.outputs.code }}\",\"inline\":true},{\"name\":\"Zeit\",\"value\":\"${{ steps.ping.outputs.time_ms }}ms\",\"inline\":true},{\"name\":\"URL\",\"value\":\"${{ steps.ping.outputs.url }}\",\"inline\":false}],\"footer\":{\"text\":\"${GITHUB_REPOSITORY}\"}}]}" \
+            -d "{\"content\":\"<@&${ROLE_ID}> 🚨 PING DOWN | ${BERLIN_NOW}\\nStatus: ${{ steps.ping.outputs.code }} | Zeit: ${{ steps.ping.outputs.time_ms }}ms\\nURL: ${{ steps.ping.outputs.url }}\\nRun: ${RUN_URL}\"}" \
             "${{ secrets.DISCORD_WEBHOOK }}"
 
       - name: Discord alert (RECOVERED)
@@ -138,9 +150,10 @@ jobs:
         shell: bash
         run: |
           RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          BERLIN_NOW="$(TZ=Europe/Berlin date '+%Y-%m-%d %H:%M %Z')"
 
           curl -H "Content-Type: application/json" \
-            -d "{\"content\":\"✅\",\"embeds\":[{\"title\":\"PING RECOVERED\",\"description\":\"Ping ist wieder erfolgreich.\",\"url\":\"${RUN_URL}\",\"fields\":[{\"name\":\"Status\",\"value\":\"${{ steps.ping.outputs.code }}\",\"inline\":true},{\"name\":\"Zeit\",\"value\":\"${{ steps.ping.outputs.time_ms }}ms\",\"inline\":true},{\"name\":\"URL\",\"value\":\"${{ steps.ping.outputs.url }}\",\"inline\":false}],\"footer\":{\"text\":\"${GITHUB_REPOSITORY}\"}}]}" \
+            -d "{\"content\":\"✅ PING RECOVERED | ${BERLIN_NOW}\\nStatus: ${{ steps.ping.outputs.code }} | Zeit: ${{ steps.ping.outputs.time_ms }}ms\\nURL: ${{ steps.ping.outputs.url }}\\nRun: ${RUN_URL}\"}" \
             "${{ secrets.DISCORD_WEBHOOK }}"
 
       - name: Keep run red when down
