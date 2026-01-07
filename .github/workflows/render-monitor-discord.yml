@@ -1,4 +1,4 @@
-name: Render Monitor (Discord)
+name: Render Monitor (Heartbeat + Hourly Stats)
 
 on:
   workflow_dispatch:
@@ -23,44 +23,35 @@ jobs:
           key: render-monitor-state
           restore-keys: render-monitor-state
 
-      - name: Read last state
-        id: last
+      - name: Ensure state dir
         shell: bash
-        run: |
-          mkdir -p .ping_state
-          LAST_STATE="unknown"
-          LAST_HOURLY_KEY=""
-          if [[ -f .ping_state/state.txt ]]; then LAST_STATE="$(cat .ping_state/state.txt)"; fi
-          if [[ -f .ping_state/last_hourly_key.txt ]]; then LAST_HOURLY_KEY="$(cat .ping_state/last_hourly_key.txt)"; fi
-          echo "last_state=$LAST_STATE" >> "$GITHUB_OUTPUT"
-          echo "last_hourly_key=$LAST_HOURLY_KEY" >> "$GITHUB_OUTPUT"
+        run: mkdir -p .ping_state
 
-      - name: Ping Render (robust)
+      - name: Ping Render (collect metrics)
         id: ping
         shell: bash
         run: |
+          set -euo pipefail
+
           URL="https://void-seven-api.onrender.com/health"
 
           OUT="$(curl -sS -o /dev/null \
             -w "%{http_code} %{time_total}" \
             --connect-timeout 10 \
             --max-time 30 \
-            --retry 2 \
-            --retry-delay 2 \
-            --retry-max-time 30 \
             "$URL" || true)"
 
           CODE="$(echo "$OUT" | awk '{print $1}')"
           TIME_S="$(echo "$OUT" | awk '{print $2}')"
-          [[ -z "$CODE" ]] && CODE="000"
-          [[ -z "$TIME_S" ]] && TIME_S="0"
+
+          [[ -z "${CODE:-}" ]] && CODE="000"
+          [[ -z "${TIME_S:-}" ]] && TIME_S="0"
 
           TIME_MS="$(awk -v t="$TIME_S" 'BEGIN{printf("%d", t*1000)}')"
 
+          STATE="down"
           if [[ "$CODE" =~ ^2[0-9][0-9]$ ]]; then
             STATE="up"
-          else
-            STATE="down"
           fi
 
           echo "code=$CODE" >> "$GITHUB_OUTPUT"
@@ -68,16 +59,34 @@ jobs:
           echo "url=$URL" >> "$GITHUB_OUTPUT"
           echo "state=$STATE" >> "$GITHUB_OUTPUT"
 
-      - name: Update counters (success/errors)
-        id: counters
+      - name: Update rolling stats (since last hourly)
+        id: stats
         shell: bash
         run: |
+          set -euo pipefail
           mkdir -p .ping_state
 
           SUCCESS=0
           ERROR=0
+          SUM_MS=0
+          MAX_MS=0
+          COUNT=0
+
           [[ -f .ping_state/success.txt ]] && SUCCESS="$(cat .ping_state/success.txt)"
           [[ -f .ping_state/error.txt ]] && ERROR="$(cat .ping_state/error.txt)"
+          [[ -f .ping_state/sum_ms.txt ]] && SUM_MS="$(cat .ping_state/sum_ms.txt)"
+          [[ -f .ping_state/max_ms.txt ]] && MAX_MS="$(cat .ping_state/max_ms.txt)"
+          [[ -f .ping_state/count.txt ]] && COUNT="$(cat .ping_state/count.txt)"
+
+          MS="${{ steps.ping.outputs.time_ms }}"
+
+          # increment counters
+          COUNT=$((COUNT + 1))
+          SUM_MS=$((SUM_MS + MS))
+
+          if [[ "$MS" -gt "$MAX_MS" ]]; then
+            MAX_MS="$MS"
+          fi
 
           if [[ "${{ steps.ping.outputs.state }}" == "up" ]]; then
             SUCCESS=$((SUCCESS + 1))
@@ -85,84 +94,82 @@ jobs:
             ERROR=$((ERROR + 1))
           fi
 
+          # persist
           echo "$SUCCESS" > .ping_state/success.txt
           echo "$ERROR" > .ping_state/error.txt
+          echo "$SUM_MS" > .ping_state/sum_ms.txt
+          echo "$MAX_MS" > .ping_state/max_ms.txt
+          echo "$COUNT" > .ping_state/count.txt
 
+          # outputs (optional)
           echo "success=$SUCCESS" >> "$GITHUB_OUTPUT"
           echo "error=$ERROR" >> "$GITHUB_OUTPUT"
+          echo "sum_ms=$SUM_MS" >> "$GITHUB_OUTPUT"
+          echo "max_ms=$MAX_MS" >> "$GITHUB_OUTPUT"
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
 
-      - name: Discord Activated (manual)
-        if: github.event_name == 'workflow_dispatch'
-        shell: bash
-        run: |
-          NOW="$(TZ=Europe/Berlin date '+%Y-%m-%d %H:%M %Z')"
-          curl -H "Content-Type: application/json" \
-            -d "{\"content\":\"🟦 ACTIVATED | ${NOW}\\nStatus: ${{ steps.ping.outputs.code }} | Zeit: ${{ steps.ping.outputs.time_ms }}ms\\nURL: ${{ steps.ping.outputs.url }}\"}" \
-            "${{ secrets.DISCORD_WEBHOOK }}"
-
+      # --------------------
+      # HEARTBEAT (EVERY RUN)
+      # --------------------
       - name: Discord Heartbeat
         shell: bash
         run: |
           NOW="$(TZ=Europe/Berlin date '+%H:%M')"
-          curl -H "Content-Type: application/json" \
-            -d "{\"content\":\"💓 HEARTBEAT | ${NOW}\\nStatus: ${{ steps.ping.outputs.code }} | Zeit: ${{ steps.ping.outputs.time_ms }}ms\\nURL: ${{ steps.ping.outputs.url }}\"}" \
-            "${{ secrets.DISCORD_WEBHOOK }}"
-
-      - name: Persist state
-        id: state
-        shell: bash
-        run: |
-          mkdir -p .ping_state
-          CUR_STATE="${{ steps.ping.outputs.state }}"
-          echo "$CUR_STATE" > .ping_state/state.txt
-          echo "cur_state=$CUR_STATE" >> "$GITHUB_OUTPUT"
-
-      - name: Discord alert (DOWN once)
-        if: steps.state.outputs.cur_state == 'down' && steps.last.outputs.last_state != 'down'
-        shell: bash
-        run: |
-          ROLE_ID="${{ secrets.DISCORD_ROLE_ID }}"
-          NOW="$(TZ=Europe/Berlin date '+%Y-%m-%d %H:%M %Z')"
-          curl -H "Content-Type: application/json" \
-            -d "{\"content\":\"<@&${ROLE_ID}> 🚨 PING DOWN | ${NOW}\\nStatus: ${{ steps.ping.outputs.code }} | Zeit: ${{ steps.ping.outputs.time_ms }}ms\\nURL: ${{ steps.ping.outputs.url }}\"}" \
-            "${{ secrets.DISCORD_WEBHOOK }}"
-
-      - name: Discord alert (RECOVERED once)
-        if: steps.state.outputs.cur_state == 'up' && steps.last.outputs.last_state == 'down'
-        shell: bash
-        run: |
-          NOW="$(TZ=Europe/Berlin date '+%Y-%m-%d %H:%M %Z')"
-          curl -H "Content-Type: application/json" \
-            -d "{\"content\":\"✅ PING RECOVERED | ${NOW}\\nStatus: ${{ steps.ping.outputs.code }} | Zeit: ${{ steps.ping.outputs.time_ms }}ms\\nURL: ${{ steps.ping.outputs.url }}\"}" \
-            "${{ secrets.DISCORD_WEBHOOK }}"
-
-      - name: Discord HOURLY STATUS (simple, 1x per hour)
-        shell: bash
-        run: |
-          # Hour key in Berlin time (e.g. 2026-01-05-07)
-          HOUR_KEY="$(TZ=Europe/Berlin date +%Y-%m-%d-%H)"
-          LAST_HOUR_KEY="${{ steps.last.outputs.last_hourly_key }}"
-
-          # Send only once per hour (no :00 window needed)
-          if [[ "$LAST_HOUR_KEY" == "$HOUR_KEY" ]]; then
-            exit 0
-          fi
-
-          SUCCESS="$(cat .ping_state/success.txt 2>/dev/null || echo 0)"
-          ERROR="$(cat .ping_state/error.txt 2>/dev/null || echo 0)"
-          NOW="$(TZ=Europe/Berlin date '+%Y-%m-%d %H:%M %Z')"
-
-          # Decide icon based on current state
           ICON="🔴"
           if [[ "${{ steps.ping.outputs.state }}" == "up" ]]; then
             ICON="🟢"
           fi
 
           curl -H "Content-Type: application/json" \
-            -d "{\"content\":\"${ICON} HOURLY STATUS | ${NOW}\\n✅ Erfolgreiche Pings: ${SUCCESS}\\n❌ Errors: ${ERROR}\\nLetzter: ${{ steps.ping.outputs.code }} | ${{ steps.ping.outputs.time_ms }}ms\\nURL: ${{ steps.ping.outputs.url }}\"}" \
+            -d "{\"content\":\"💓 HEARTBEAT | ${NOW} ${ICON}\nStatus: ${{ steps.ping.outputs.code }} | Zeit: ${{ steps.ping.outputs.time_ms }}ms\nURL: ${{ steps.ping.outputs.url }}\"}" \
             "${{ secrets.DISCORD_WEBHOOK }}"
 
-          # Reset counters for next hour
+      # --------------------
+      # HOURLY PING (EVERY 60 MIN, WITH STATS)
+      # --------------------
+      - name: Discord Hourly Ping (every 60 min)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .ping_state
+
+          NOW_TS="$(date +%s)"
+          LAST_TS="0"
+          [[ -f .ping_state/last_hourly_ts.txt ]] && LAST_TS="$(cat .ping_state/last_hourly_ts.txt)"
+
+          DIFF=$((NOW_TS - LAST_TS))
+          if [[ "$DIFF" -lt 3600 ]]; then
+            exit 0
+          fi
+
+          SUCCESS="$(cat .ping_state/success.txt 2>/dev/null || echo 0)"
+          ERROR="$(cat .ping_state/error.txt 2>/dev/null || echo 0)"
+          SUM_MS="$(cat .ping_state/sum_ms.txt 2>/dev/null || echo 0)"
+          MAX_MS="$(cat .ping_state/max_ms.txt 2>/dev/null || echo 0)"
+          COUNT="$(cat .ping_state/count.txt 2>/dev/null || echo 0)"
+
+          AVG_MS="0"
+          if [[ "$COUNT" -gt 0 ]]; then
+            AVG_MS=$((SUM_MS / COUNT))
+          fi
+
+          NOW_HUMAN="$(TZ=Europe/Berlin date '+%Y-%m-%d %H:%M %Z')"
+
+          ICON="🔴"
+          if [[ "${{ steps.ping.outputs.state }}" == "up" ]]; then
+            ICON="🟢"
+          fi
+
+          curl -H "Content-Type: application/json" \
+            -d "{\"content\":\"${ICON} HOURLY PING | ${NOW_HUMAN}\n✅ Success: ${SUCCESS}\n❌ Errors: ${ERROR}\n⏱ Avg: ${AVG_MS}ms | Max: ${MAX_MS}ms\nLast: ${{ steps.ping.outputs.code }} | ${{ steps.ping.outputs.time_ms }}ms\nURL: ${{ steps.ping.outputs.url }}\"}" \
+            "${{ secrets.DISCORD_WEBHOOK }}"
+
+          # reset stats window
           echo 0 > .ping_state/success.txt
           echo 0 > .ping_state/error.txt
-          echo "$HOUR_KEY" > .ping_state/last_hourly_key.txt
+          echo 0 > .ping_state/sum_ms.txt
+          echo 0 > .ping_state/max_ms.txt
+          echo 0 > .ping_state/count.txt
+
+          # store last hourly ts
+          echo "$NOW_TS" > .ping_state/last_hourly_ts.txt
